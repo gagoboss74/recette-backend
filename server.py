@@ -1,117 +1,125 @@
-from fastapi import FastAPI, APIRouter, File, UploadFile, HTTPException
-from fastapi.staticfiles import StaticFiles
-from starlette.middleware.cors import CORSMiddleware
+from fastapi import FastAPI, APIRouter, File, UploadFile, HTTPException, Depends, Header
+from fastapi.middleware.cors import CORSMiddleware
 from motor.motor_asyncio import AsyncIOMotorClient
-from dotenv import load_dotenv
 
 import os
-import shutil
-from pathlib import Path
-from pydantic import BaseModel, Field, ConfigDict
-from typing import List
 import uuid
-from datetime import datetime, timezone
 import logging
+import cloudinary
+import cloudinary.uploader
 
-# ================= LOAD ENV =================
-load_dotenv()
+import firebase_admin
+from firebase_admin import credentials, auth
 
-# ================= PATHS =================
-ROOT_DIR = Path(__file__).parent
-UPLOAD_DIR = ROOT_DIR / "uploads"
-UPLOAD_DIR.mkdir(exist_ok=True)
+# ===== LOGGING =====
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger("recette-api")
 
-# ================= ENV =================
+# ===== ENV =====
 MONGO_URL = os.getenv("MONGO_URL")
 DB_NAME = os.getenv("DB_NAME")
-BASE_URL = os.getenv("BASE_URL")  # Render only
+CORS_ORIGINS = os.getenv(
+    "CORS_ORIGINS",
+    "http://localhost:3000,https://recettes-61ab7.web.app"
+).split(",")
 
-if not MONGO_URL or not DB_NAME or not BASE_URL:
+CLOUDINARY_CLOUD_NAME = os.getenv("CLOUDINARY_CLOUD_NAME")
+CLOUDINARY_API_KEY = os.getenv("CLOUDINARY_API_KEY")
+CLOUDINARY_API_SECRET = os.getenv("CLOUDINARY_API_SECRET")
+
+if not all([
+    MONGO_URL,
+    DB_NAME,
+    CLOUDINARY_CLOUD_NAME,
+    CLOUDINARY_API_KEY,
+    CLOUDINARY_API_SECRET,
+]):
     raise RuntimeError("❌ Variables d'environnement manquantes")
 
-# ================= DATABASE =================
+# ===== CLOUDINARY =====
+cloudinary.config(
+    cloud_name=CLOUDINARY_CLOUD_NAME,
+    api_key=CLOUDINARY_API_KEY,
+    api_secret=CLOUDINARY_API_SECRET,
+    secure=True,
+)
+
+# ===== FIREBASE ADMIN =====
+cred = credentials.Certificate("/etc/secrets/firebase_service_account.json")
+firebase_admin.initialize_app(cred)
+
+# ===== DB =====
 client = AsyncIOMotorClient(MONGO_URL)
 db = client[DB_NAME]
 
-# ================= APP =================
-app = FastAPI()
-api_router = APIRouter(prefix="/api")
+# ===== APP =====
+app = FastAPI(title="Recette API", version="2.0.0")
 
-# ================= STATIC FILES =================
-app.mount("/uploads", StaticFiles(directory=UPLOAD_DIR), name="uploads")
-
-# ================= LOGGING =================
-logging.basicConfig(level=logging.INFO)
-logger = logging.getLogger(__name__)
-
-# ================= MODELS =================
-class StatusCheck(BaseModel):
-    model_config = ConfigDict(extra="ignore")
-    id: str = Field(default_factory=lambda: str(uuid.uuid4()))
-    client_name: str
-    timestamp: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
-
-class StatusCheckCreate(BaseModel):
-    client_name: str
-
-# ================= ROUTES =================
-@api_router.get("/")
-async def root():
-    return {"message": "API is running"}
-
-@api_router.post("/status", response_model=StatusCheck)
-async def create_status_check(input: StatusCheckCreate):
-    status = StatusCheck(client_name=input.client_name)
-    doc = status.model_dump()
-    doc["timestamp"] = doc["timestamp"].isoformat()
-    await db.status_checks.insert_one(doc)
-    return status
-
-@api_router.get("/status", response_model=List[StatusCheck])
-async def get_status_checks():
-    checks = await db.status_checks.find({}, {"_id": 0}).to_list(1000)
-    for c in checks:
-        if isinstance(c["timestamp"], str):
-            c["timestamp"] = datetime.fromisoformat(c["timestamp"])
-    return checks
-
-# ================= IMAGE UPLOAD =================
-@api_router.post("/upload-image")
-async def upload_image(file: UploadFile = File(...)):
-    if not file.content_type or not file.content_type.startswith("image/"):
-        raise HTTPException(status_code=400, detail="File must be an image")
-
-    extension = Path(file.filename).suffix
-    filename = f"{uuid.uuid4()}_{int(datetime.now().timestamp())}{extension}"
-    file_path = UPLOAD_DIR / filename
-
-    with open(file_path, "wb") as buffer:
-        shutil.copyfileobj(file.file, buffer)
-
-    image_url = f"{BASE_URL}/uploads/{filename}"
-
-    logger.info(f"✅ Image uploaded: {image_url}")
-
-    return {
-        "success": True,
-        "imageUrl": image_url,
-        "filename": filename
-    }
-
-# ================= MIDDLEWARE =================
+# ===== CORS =====
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=[
-        "http://localhost:3000",          # DEV local
-        "https://recettes-61ab7.web.app"  # PROD Firebase
-    ],
+    allow_origins=CORS_ORIGINS,
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
 )
 
-app.include_router(api_router)
+api = APIRouter(prefix="/api")
+
+# ===== AUTH DEPENDENCY =====
+async def verify_firebase_token(authorization: str = Header(...)):
+    if not authorization.startswith("Bearer "):
+        raise HTTPException(status_code=401, detail="Invalid Authorization header")
+
+    token = authorization.replace("Bearer ", "")
+
+    try:
+        decoded = auth.verify_id_token(token)
+        return decoded
+    except Exception:
+        raise HTTPException(status_code=401, detail="Invalid or expired token")
+
+# ===== HEALTH =====
+@api.get("/")
+async def root():
+    return {"status": "ok"}
+
+# ===== UPLOAD IMAGE (SECURED) =====
+@api.post("/upload-image")
+async def upload_image(
+    file: UploadFile = File(...),
+    user=Depends(verify_firebase_token),
+):
+    if not file.content_type or not file.content_type.startswith("image/"):
+        raise HTTPException(status_code=400, detail="Invalid image")
+
+    result = cloudinary.uploader.upload(
+        file.file,
+        folder="recettes",
+        public_id=str(uuid.uuid4()),
+    )
+
+    logger.info(f"Image uploaded by {user['uid']}")
+
+    return {
+        "success": True,
+        "imageUrl": result["secure_url"],
+        "public_id": result["public_id"],
+        "uid": user["uid"],
+    }
+
+# ===== DELETE IMAGE =====
+@api.delete("/delete-image")
+async def delete_image(
+    public_id: str,
+    user=Depends(verify_firebase_token),
+):
+    cloudinary.uploader.destroy(public_id)
+    logger.info(f"Image deleted by {user['uid']}")
+    return {"success": True}
+
+app.include_router(api)
 
 @app.on_event("shutdown")
-async def shutdown_db():
+async def shutdown():
     client.close()
