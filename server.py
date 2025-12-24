@@ -1,4 +1,4 @@
-from fastapi import FastAPI, APIRouter, File, UploadFile, HTTPException
+from fastapi import FastAPI, APIRouter, File, UploadFile, HTTPException, Body
 from fastapi.middleware.cors import CORSMiddleware
 from motor.motor_asyncio import AsyncIOMotorClient
 
@@ -7,7 +7,6 @@ import uuid
 import logging
 import cloudinary
 import cloudinary.uploader
-import cloudinary.api
 
 # ===== LOGGING =====
 logging.basicConfig(level=logging.INFO)
@@ -21,10 +20,12 @@ CLOUDINARY_CLOUD_NAME = os.getenv("CLOUDINARY_CLOUD_NAME")
 CLOUDINARY_API_KEY = os.getenv("CLOUDINARY_API_KEY")
 CLOUDINARY_API_SECRET = os.getenv("CLOUDINARY_API_SECRET")
 
-CORS_ORIGINS = os.getenv(
-    "CORS_ORIGINS",
-    "http://localhost:3000,https://recettes-61ab7.web.app"
-).split(",")
+# ⚠️ FIREBASE A DEUX DOMAINES
+CORS_ORIGINS = [
+    "http://localhost:3000",
+    "https://recettes-61ab7.web.app",
+    "https://recettes-61ab7.firebaseapp.com"
+]
 
 if not all([
     MONGO_URL,
@@ -33,9 +34,9 @@ if not all([
     CLOUDINARY_API_KEY,
     CLOUDINARY_API_SECRET
 ]):
-    raise RuntimeError("❌ Variables d'environnement manquantes")
+    raise RuntimeError("Variables d'environnement manquantes")
 
-# ===== CLOUDINARY CONFIG =====
+# ===== CLOUDINARY =====
 cloudinary.config(
     cloud_name=CLOUDINARY_CLOUD_NAME,
     api_key=CLOUDINARY_API_KEY,
@@ -50,7 +51,7 @@ db = client[DB_NAME]
 # ===== APP =====
 app = FastAPI(title="Recette API", version="1.0.0")
 
-# ===== CORS =====
+# ===== CORS (FIX FINAL) =====
 app.add_middleware(
     CORSMiddleware,
     allow_origins=CORS_ORIGINS,
@@ -66,45 +67,33 @@ api = APIRouter(prefix="/api")
 async def root():
     return {"status": "ok"}
 
-# ===== UPLOAD IMAGE (CLOUDINARY) =====
+# ===== UPLOAD IMAGE =====
 @api.post("/upload-image")
 async def upload_image(file: UploadFile = File(...)):
     if not file.content_type or not file.content_type.startswith("image/"):
         raise HTTPException(status_code=400, detail="Invalid image")
 
-    try:
-        result = cloudinary.uploader.upload(
-            file.file,
-            folder="recettes",
-            public_id=str(uuid.uuid4()),
-            resource_type="image"
-        )
+    result = cloudinary.uploader.upload(
+        file.file,
+        folder="recettes",
+        public_id=str(uuid.uuid4()),
+        resource_type="image"
+    )
 
-        logger.info(f"✅ Image uploaded: {result['secure_url']}")
+    return {
+        "imageUrl": result["secure_url"],
+        "public_id": result["public_id"]
+    }
 
-        return {
-            "imageUrl": result["secure_url"],
-            "public_id": result["public_id"]
-        }
-
-    except Exception as e:
-        logger.error(f"❌ Upload error: {e}")
-        raise HTTPException(status_code=500, detail="Upload failed")
-
-# ===== DELETE IMAGE (CLOUDINARY) =====
+# ===== DELETE IMAGE =====
 @api.delete("/delete-image")
-async def delete_image(payload: dict):
+async def delete_image(payload: dict = Body(...)):
     public_id = payload.get("public_id")
     if not public_id:
         raise HTTPException(status_code=400, detail="public_id manquant")
 
-    try:
-        cloudinary.uploader.destroy(public_id)
-        logger.info(f"🗑️ Image deleted: {public_id}")
-        return {"success": True}
-    except Exception as e:
-        logger.error(f"❌ Delete error: {e}")
-        raise HTTPException(status_code=500, detail="Delete failed")
+    cloudinary.uploader.destroy(public_id)
+    return {"success": True}
 
 app.include_router(api)
 
