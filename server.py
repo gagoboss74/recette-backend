@@ -1,6 +1,5 @@
 from fastapi import FastAPI, APIRouter, File, UploadFile, HTTPException
 from fastapi.responses import FileResponse
-from dotenv import load_dotenv
 from starlette.middleware.cors import CORSMiddleware
 from motor.motor_asyncio import AsyncIOMotorClient
 import os
@@ -13,21 +12,20 @@ import uuid
 from datetime import datetime, timezone
 
 # ========================
-# ENV & PATHS
+# PATHS
 # ========================
 
 ROOT_DIR = Path(__file__).parent
-load_dotenv(ROOT_DIR / ".env")
-
-BASE_URL = os.getenv("BASE_URL", "http://localhost:8000")
 
 # ========================
 # DATABASE
 # ========================
 
-mongo_url = os.environ["MONGO_URL"]
+mongo_url = os.environ["MONGO_URL"]          # 🔥 Render env
+db_name = os.environ["DB_NAME"]
+
 client = AsyncIOMotorClient(mongo_url)
-db = client[os.environ["DB_NAME"]]
+db = client[db_name]
 
 # ========================
 # UPLOADS DIRECTORY
@@ -96,30 +94,24 @@ async def get_status_checks():
 
 @api_router.post("/upload-image")
 async def upload_image(file: UploadFile = File(...)):
-    try:
-        if not file.content_type.startswith("image/"):
-            raise HTTPException(status_code=400, detail="File must be an image")
+    if not file.content_type.startswith("image/"):
+        raise HTTPException(status_code=400, detail="File must be an image")
 
-        extension = Path(file.filename).suffix
-        filename = f"{uuid.uuid4()}_{int(datetime.now().timestamp())}{extension}"
-        file_path = UPLOAD_DIR / filename
+    extension = Path(file.filename).suffix
+    filename = f"{uuid.uuid4()}_{int(datetime.now().timestamp())}{extension}"
+    file_path = UPLOAD_DIR / filename
 
-        with open(file_path, "wb") as buffer:
-            shutil.copyfileobj(file.file, buffer)
+    with open(file_path, "wb") as buffer:
+        shutil.copyfileobj(file.file, buffer)
 
-        image_url = f"{BASE_URL}/api/images/{filename}"
+    logger.info(f"Image uploaded: {filename}")
 
-        logger.info(f"Image uploaded: {filename}")
-
-        return {
-            "success": True,
-            "imageUrl": image_url,
-            "filename": filename
-        }
-
-    except Exception as e:
-        logger.error(str(e))
-        raise HTTPException(status_code=500, detail="Upload failed")
+    # ✅ URL RELATIVE (jamais localhost)
+    return {
+        "success": True,
+        "imageUrl": f"/api/images/{filename}",
+        "filename": filename
+    }
 
 @api_router.get("/images/{filename}")
 async def get_image(filename: str):
