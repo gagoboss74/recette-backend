@@ -1,69 +1,50 @@
 from fastapi import FastAPI, APIRouter, File, UploadFile, HTTPException
-from fastapi.responses import FileResponse
+from fastapi.staticfiles import StaticFiles
 from starlette.middleware.cors import CORSMiddleware
 from motor.motor_asyncio import AsyncIOMotorClient
+from dotenv import load_dotenv
 
 import os
-import logging
 import shutil
 from pathlib import Path
 from pydantic import BaseModel, Field, ConfigDict
 from typing import List
 import uuid
 from datetime import datetime, timezone
+import logging
 
-# ========================
-# PATHS
-# ========================
+# ================= LOAD ENV =================
+load_dotenv()
 
+# ================= PATHS =================
 ROOT_DIR = Path(__file__).parent
-
-# ========================
-# DATABASE
-# ========================
-
-mongo_url = os.environ["MONGO_URL"]     # Render env
-db_name = os.environ["DB_NAME"]
-
-client = AsyncIOMotorClient(mongo_url)
-db = client[db_name]
-
-# ========================
-# UPLOADS DIRECTORY
-# ========================
-
 UPLOAD_DIR = ROOT_DIR / "uploads"
 UPLOAD_DIR.mkdir(exist_ok=True)
 
-# ========================
-# APP & ROUTER
-# ========================
+# ================= ENV =================
+MONGO_URL = os.getenv("MONGO_URL")
+DB_NAME = os.getenv("DB_NAME")
+BASE_URL = os.getenv("BASE_URL")  # Render only
 
+if not MONGO_URL or not DB_NAME or not BASE_URL:
+    raise RuntimeError("❌ Variables d'environnement manquantes")
+
+# ================= DATABASE =================
+client = AsyncIOMotorClient(MONGO_URL)
+db = client[DB_NAME]
+
+# ================= APP =================
 app = FastAPI()
-from fastapi.staticfiles import StaticFiles
-
-app.mount(
-    "/uploads",
-    StaticFiles(directory=UPLOAD_DIR),
-    name="uploads"
-)
-
 api_router = APIRouter(prefix="/api")
 
-# ========================
-# LOGGING
-# ========================
+# ================= STATIC FILES =================
+app.mount("/uploads", StaticFiles(directory=UPLOAD_DIR), name="uploads")
 
-logging.basicConfig(
-    level=logging.INFO,
-    format="%(asctime)s - %(levelname)s - %(message)s"
-)
+# ================= LOGGING =================
+logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-# ========================
-# MODELS
-# ========================
-
+# ================= MODELS =================
 class StatusCheck(BaseModel):
     model_config = ConfigDict(extra="ignore")
     id: str = Field(default_factory=lambda: str(uuid.uuid4()))
@@ -73,10 +54,7 @@ class StatusCheck(BaseModel):
 class StatusCheckCreate(BaseModel):
     client_name: str
 
-# ========================
-# BASIC ROUTES
-# ========================
-
+# ================= ROUTES =================
 @api_router.get("/")
 async def root():
     return {"message": "API is running"}
@@ -97,13 +75,10 @@ async def get_status_checks():
             c["timestamp"] = datetime.fromisoformat(c["timestamp"])
     return checks
 
-# ========================
-# IMAGE UPLOAD
-# ========================
-
+# ================= IMAGE UPLOAD =================
 @api_router.post("/upload-image")
 async def upload_image(file: UploadFile = File(...)):
-    if not file.content_type.startswith("image/"):
+    if not file.content_type or not file.content_type.startswith("image/"):
         raise HTTPException(status_code=400, detail="File must be an image")
 
     extension = Path(file.filename).suffix
@@ -113,48 +88,26 @@ async def upload_image(file: UploadFile = File(...)):
     with open(file_path, "wb") as buffer:
         shutil.copyfileobj(file.file, buffer)
 
-    logger.info(f"Image uploaded: {filename}")
+    image_url = f"{BASE_URL}/uploads/{filename}"
 
-    # 🌍 BASE URL backend (ABSOLUE)
-    BASE_URL = os.getenv(
-        "BASE_URL",
-        "https://recette-backend-vbhd.onrender.com"  # fallback sécurité
-    )
+    logger.info(f"✅ Image uploaded: {image_url}")
 
     return {
         "success": True,
-        "imageUrl": f"{BASE_URL}/uploads/{filename}",  # ✅ ABSOLUE
+        "imageUrl": image_url,
         "filename": filename
     }
 
-
-async def get_image(filename: str):
-    file_path = UPLOAD_DIR / filename
-    if not file_path.exists():
-        raise HTTPException(status_code=404, detail="Image not found")
-    return FileResponse(file_path)
-
-
-async def delete_image(filename: str):
-    file_path = UPLOAD_DIR / filename
-    if file_path.exists():
-        file_path.unlink()
-        return {"success": True}
-    raise HTTPException(status_code=404, detail="Image not found")
-
-# ========================
-# MIDDLEWARE & ROUTES
-# ========================
-
-app.include_router(api_router)
-
+# ================= MIDDLEWARE =================
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=os.getenv("CORS_ORIGINS", "*").split(","),
+    allow_origins=os.getenv("CORS_ORIGINS", "").split(","),
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+app.include_router(api_router)
 
 @app.on_event("shutdown")
 async def shutdown_db():
