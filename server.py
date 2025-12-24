@@ -2,6 +2,7 @@ from fastapi import FastAPI, APIRouter, File, UploadFile, HTTPException
 from fastapi.responses import FileResponse
 from starlette.middleware.cors import CORSMiddleware
 from motor.motor_asyncio import AsyncIOMotorClient
+
 import os
 import logging
 import shutil
@@ -21,7 +22,7 @@ ROOT_DIR = Path(__file__).parent
 # DATABASE
 # ========================
 
-mongo_url = os.environ["MONGO_URL"]          # 🔥 Render env
+mongo_url = os.environ["MONGO_URL"]     # Render env
 db_name = os.environ["DB_NAME"]
 
 client = AsyncIOMotorClient(mongo_url)
@@ -39,6 +40,14 @@ UPLOAD_DIR.mkdir(exist_ok=True)
 # ========================
 
 app = FastAPI()
+from fastapi.staticfiles import StaticFiles
+
+app.mount(
+    "/uploads",
+    StaticFiles(directory=UPLOAD_DIR),
+    name="uploads"
+)
+
 api_router = APIRouter(prefix="/api")
 
 # ========================
@@ -106,21 +115,26 @@ async def upload_image(file: UploadFile = File(...)):
 
     logger.info(f"Image uploaded: {filename}")
 
-    # ✅ URL RELATIVE (jamais localhost)
+    # 🌍 BASE URL backend (ABSOLUE)
+    BASE_URL = os.getenv(
+        "BASE_URL",
+        "https://recette-backend-vbhd.onrender.com"  # fallback sécurité
+    )
+
     return {
         "success": True,
-        "imageUrl": f"/api/images/{filename}",
+        "imageUrl": f"{BASE_URL}/uploads/{filename}",  # ✅ ABSOLUE
         "filename": filename
     }
 
-@api_router.get("/images/{filename}")
+
 async def get_image(filename: str):
     file_path = UPLOAD_DIR / filename
     if not file_path.exists():
         raise HTTPException(status_code=404, detail="Image not found")
     return FileResponse(file_path)
 
-@api_router.delete("/images/{filename}")
+
 async def delete_image(filename: str):
     file_path = UPLOAD_DIR / filename
     if file_path.exists():
