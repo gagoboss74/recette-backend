@@ -101,7 +101,10 @@ async def upload_image(file: UploadFile = File(...)):
 # ================= MIDDLEWARE =================
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=os.getenv("CORS_ORIGINS", "").split(","),
+    allow_origins=[
+        "http://localhost:3000",          # DEV local
+        "https://recettes-61ab7.web.app"  # PROD Firebase
+    ],
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
