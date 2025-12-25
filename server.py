@@ -1,7 +1,6 @@
 from fastapi import FastAPI, APIRouter, File, UploadFile, HTTPException, Body
 from fastapi.middleware.cors import CORSMiddleware
 from motor.motor_asyncio import AsyncIOMotorClient
-
 import os
 import uuid
 import logging
@@ -20,7 +19,6 @@ CLOUDINARY_CLOUD_NAME = os.getenv("CLOUDINARY_CLOUD_NAME")
 CLOUDINARY_API_KEY = os.getenv("CLOUDINARY_API_KEY")
 CLOUDINARY_API_SECRET = os.getenv("CLOUDINARY_API_SECRET")
 
-# ⚠️ FIREBASE A DEUX DOMAINES
 CORS_ORIGINS = [
     "http://localhost:3000",
     "https://recettes-61ab7.web.app",
@@ -34,7 +32,7 @@ if not all([
     CLOUDINARY_API_KEY,
     CLOUDINARY_API_SECRET
 ]):
-    raise RuntimeError("Variables d'environnement manquantes")
+    raise RuntimeError("❌ Variables d'environnement manquantes")
 
 # ===== CLOUDINARY =====
 cloudinary.config(
@@ -51,7 +49,7 @@ db = client[DB_NAME]
 # ===== APP =====
 app = FastAPI(title="Recette API", version="1.0.0")
 
-# ===== CORS (FIX FINAL) =====
+# ===== CORS =====
 app.add_middleware(
     CORSMiddleware,
     allow_origins=CORS_ORIGINS,
@@ -60,11 +58,16 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+# ===== ROOT (OBLIGATOIRE POUR RENDER) =====
+@app.get("/")
+async def root():
+    return {"status": "API UP"}
+
+# ===== API ROUTER =====
 api = APIRouter(prefix="/api")
 
-# ===== HEALTH =====
-@api.get("/")
-async def root():
+@api.get("")
+async def api_health():
     return {"status": "ok"}
 
 # ===== UPLOAD IMAGE =====
